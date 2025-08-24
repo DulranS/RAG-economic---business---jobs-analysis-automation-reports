@@ -10,6 +10,7 @@ import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv()
+BRUTAL_MODE = True
 
 # Simple document class
 class Document:
@@ -161,6 +162,26 @@ class RAGRetriever:
         self.vectorstore = None
         self.documents = self._load_sri_lanka_economic_data()
         self._build_vectorstore()
+    
+    def brutal_penalty(op):
+        # op is a dict with fields from BusinessAnalysisAgent
+        penalty = 0
+        # Local-demand dependence
+        if op.get("export_revenue_share", 0) < 50:
+            penalty += 20
+        # High capex
+        if "High" in op.get("investment_required", ""):
+            penalty += 15
+        # Logistics/permits/seasonality hazards
+        hazards = " ".join(op.get("hard_constraints", [])).lower()
+        for kw, p in [("permit",5), ("license",5), ("logistics",7), ("import",7), ("season",6)]:
+            if kw in hazards: penalty += p
+        # Competition
+        if op.get("competition_level") in ["High","Very High"]:
+            penalty += 10
+        # Turn score into 0–100 brutal_score if missing
+        base = op.get("growth_potential", 5) * 8  # 0–80
+        return max(0, min(100, base - penalty))
     
     def _load_sri_lanka_economic_data(self) -> List[Document]:
         """Load comprehensive Sri Lanka economic data for RAG"""
@@ -351,7 +372,24 @@ class EconomicNewsAgent:
             f"{location} economic trends GDP growth inflation recovery tourism IT sector"
         )
         
-        system_prompt = f"""You are an expert economic analyst. Use the CONTEXT below for accurate, current data about {location}'s economy.
+        system_prompt = f""""You are an expert economic analyst. Use the CONTEXT below for {location}.
+You must be BRUTAL and risk-adjusted:
+- Prioritize downside risks, fragility, and execution barriers.
+- Penalize sectors dependent on local demand, seasonal volatility, regulation, or import constraints.
+- Use 25th–50th percentile outcomes (not best case).
+- Include a 'worst_case_12mo' field and a 'confidence' 0–1.
+
+Return ONLY valid JSON:
+{{
+  "economic_health_score": number 1-10 (risk-adjusted, pessimistic),
+  "key_trends": [4-5 bullets, brutally realistic],
+  "growth_opportunities": [top 3, export-weighted],
+  "major_risks": [top 3, concrete],
+  "sector_performance": {{"IT": n, "tourism": n, "construction": n}},
+  "worst_case_12mo": "short narrative",
+  "confidence": number 0-1,
+  "overall_outlook": "positive" | "neutral" | "negative"
+}}
 
 CONTEXT:
 {context}
@@ -414,7 +452,36 @@ class BusinessAnalysisAgent:
             f"{location} business opportunities tourism agriculture healthcare education logistics manufacturing economic drivers"
         )
         
-        system_prompt = f"""You are a comprehensive business opportunity analyst. Use this CONTEXT:
+        system_prompt = f"""You are a comprehensive business opportunity analyst. Be BRUTAL.
+Rules:
+- Score opportunity at 25th–50th percentile revenue and margin.
+- Heavily penalize: regulatory delay, capex intensity, supply/logistics fragility, dependence on local demand, seasonality, saturated niches.
+- Reward: exportability, USD revenue, low CAC, fast payback <12 mo.
+- Require 'why_it_fails' and 'hard_constraints' fields.
+- Output 'export_revenue_share' (%) and 'brutal_score' (0–100).
+
+Return valid JSON:
+{{
+  "business_opportunities": [
+    {{
+      "name": "...",
+      "category": "Pure Tech" | "Tech Fusion" | "Traditional Non-Tech" | "Tech-Enabled Traditional",
+      "market_demand": "Very High"|"High"|"Medium"|"Low",
+      "competition_level": "Very High"|"High"|"Medium"|"Low",
+      "setup_feasibility": "High"|"Medium"|"Low",
+      "growth_potential": 1-10,
+      "investment_required": "Low (<LKR 1M)"|"Medium (LKR 1-5M)"|"High (>LKR 5M)",
+      "revenue_potential": "LKR X–Y/month (25th–50th percentile)",
+      "economic_backing": "specific",
+      "export_revenue_share": 0-100,
+      "key_success_factors": ["..."],
+      "why_it_fails": ["top 3 failure modes"],
+      "hard_constraints": ["permits", "capex", "talent", "logistics", as applicable],
+      "brutal_score": 0-100
+    }},
+    ...
+  ]
+}}
 
 CONTEXT:
 {context}
@@ -551,7 +618,30 @@ class JobMarketAgent:
             "Cybersecurity Specialist"
         ]
         
-        system_prompt = f"""You are a job market analyst. Use this CONTEXT:
+        system_prompt = f"""You are a job market analyst. Be BRUTAL and pessimistic.
+- Use salary bands at 25th–75th percentile (not top offers).
+- Explicitly penalize junior roles and roles exposed to AI automation.
+- Add 'go_to_market_path' and 'kill_criteria_90_days' per role.
+
+Return valid JSON:
+{{
+  "job_roles": [
+    {{
+      "role": "...",
+      "demand_level": "...",
+      "market_outlook": "...",
+      "local_salary_range": "LKR a–b/month (25th–75th)",
+      "remote_potential": "USD a–b/month (25th–75th)",
+      "market_saturation": "Low"|"Medium"|"High",
+      "ai_automation_risk": "Low"|"Medium"|"High",
+      "top_niches": ["..."],
+      "skills_in_demand": ["..."],
+      "career_growth": "short narrative",
+      "go_to_market_path": ["first 3 client types, channels"],
+      "kill_criteria_90_days": ["objective cutoffs to abandon"]
+    }}
+  ]
+}}
 
 CONTEXT:
 {context}
@@ -651,7 +741,18 @@ class WorkflowOrchestrator:
     async def create_comprehensive_report(self, economic_data: Dict, business_data: Dict, job_data: Dict, location: str) -> str:
         """Create final comprehensive report with all tables including non-tech businesses"""
         
-        system_prompt = f"""You are an expert economic strategist. Create a comprehensive analysis report for {location} using the provided data.
+        system_prompt = f"""You are an expert economic strategist. Produce a BRUTAL markdown report for {location}.
+Requirements:
+- Rank tables by 'brutal_score' (if present) else by growth minus risk.
+- Add a 'BRUTAL REALITY' section with top 5 failure patterns and execution hazards.
+- Include 'Go/No-Go' per opportunity, plus 'Prerequisites' and 'Kill Criteria'.
+- Prefer exportable, USD-earning, low-CAC, low-capex plays.
+
+Sections (same as before) PLUS:
+10. **BRUTAL REALITY (Failure Patterns & Hazards)**
+11. **GO/NO-GO + KILL CRITERIA TABLE**
+
+Use concise language; assume pessimistic baselines.
 
 Create a well-structured markdown report with these sections:
 
@@ -850,7 +951,7 @@ async def main():
             
             # Save report
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"enhanced_economic_analysis_{timestamp}.pdf"
+            filename = f"enhanced_economic_analysis_{timestamp}.md"
             
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(f"# Enhanced Economic Analysis: {location}\n\n")
@@ -883,3 +984,74 @@ async def main():
 if __name__ == "__main__":
     print("🚀 Starting Enhanced RAG Economic Analysis...")
     asyncio.run(main())
+
+# Installation & Setup Instructions
+"""
+QUICK SETUP GUIDE:
+==================
+
+1. INSTALL OLLAMA:
+   - Windows: Download from https://ollama.ai/download/windows
+   - macOS: Download from https://ollama.ai/download/mac
+   - Linux: curl -fsSL https://ollama.ai/install.sh | sh
+
+2. START OLLAMA SERVICE:
+   - Open command prompt/terminal
+   - Run: ollama serve
+   - Verify at http://localhost:11434
+
+3. DOWNLOAD AI MODEL:
+   - Run: ollama pull llama3.1:8b
+   - Alternative: ollama pull llama3:8b
+   - Wait for download to complete
+
+4. INSTALL PYTHON DEPENDENCIES:
+   pip install aiohttp python-dotenv requests
+
+5. RUN THE ANALYSIS:
+   python enhanced_analysis.py
+
+KEY FEATURES:
+=============
+✅ Enhanced RAG system with Sri Lankan economic data
+✅ 5 job roles including cybersecurity specialist  
+✅ AI automation risk assessment for each role
+✅ Market saturation analysis
+✅ Tech AND Non-Tech business opportunities
+✅ Economic backing analysis for all sectors
+✅ Tourism, healthcare, agriculture, food & beverage sectors
+✅ Tech-enabled traditional business hybrids
+✅ Investment requirement analysis
+✅ Government policy and incentive tracking
+✅ Comprehensive tables ranked by opportunity
+✅ Local Llama 3.1 model (no API costs)
+✅ Direct HTTP communication (no complex dependencies)
+
+FIXES APPLIED:
+==============
+🔧 Fixed JSON parsing with proper error handling
+🔧 Enhanced model detection (tries multiple model names)
+🔧 Added connection testing and diagnostics
+🔧 Improved timeout handling for large responses
+🔧 Better error messages and troubleshooting
+🔧 Added cybersecurity as 5th core job role
+🔧 Enhanced RAG data with AI automation impact
+🔧 Added fusion business opportunities
+🔧 Multiple ranking tables for different aspects
+
+TROUBLESHOOTING:
+===============
+- Connection fails → Check 'ollama serve' is running
+- Model not found → Try 'ollama pull llama3.1:8b'
+- Timeout errors → Model needs more time, increase timeout
+- JSON errors → Fallback data provided automatically
+- Port issues → Check firewall/antivirus blocking port 11434
+
+The system now includes comprehensive analysis of:
+- Traditional tech businesses
+- Fusion opportunities (AI + Cybersecurity, Cloud + Fintech, etc.)
+- AI automation impact on each job role
+- Market saturation levels
+- Cybersecurity as a core specialization
+- Enhanced ranking tables for better decision making
+"""
